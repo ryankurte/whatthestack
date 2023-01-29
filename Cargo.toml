@@ -1,0 +1,18 @@
+[package]
+name = "whatthestack"
+description = "Command line tool for viewing LLVM stack usage information"
+repository = "https://github.com/ryankurte/whatthestack"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[dependencies]
+addr2line = "0.19.0"
+anyhow = "1.0.68"
+clap = { version = "4.1.4", features = [ "derive", "env" ] }
+cli-table = "0.4"
+elf = "0.7.1"
+log = "0.4.17"
+rustc-demangle = "0.1"
+simplelog = "0.12.0"
+stack-sizes = "0.5.0"
