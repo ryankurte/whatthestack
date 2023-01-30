@@ -8,7 +8,7 @@ use regex::Regex;
 use stack_sizes::{analyze_executable, analyze_object};
 use rustc_demangle::demangle;
 
-
+/// WhatTheStack (wts), a tool for analysing stack use via LLVM `-Zemit-stack-sizes` information
 #[derive(Clone, Debug, PartialEq, Parser)]
 pub struct Args {
     /// ELF or object file for parsing
