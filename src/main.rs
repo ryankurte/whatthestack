@@ -1,9 +1,10 @@
 
-use addr2line::{object::{Object, SymbolMap, SymbolMapName, Endian, ObjectSection}, Context, gimli::{EndianReader, RunTimeEndian, EndianRcSlice, Arm, LittleEndian}, ObjectContext};
+use addr2line::{object::{Object, SymbolMap, SymbolMapName, ObjectSection}, ObjectContext};
 use clap::{Parser, ValueEnum};
 use log::{debug, info, LevelFilter};
 use cli_table::{Cell, Table, format::{Border, Separator}};
 
+use regex::Regex;
 use stack_sizes::{analyze_executable, analyze_object};
 use rustc_demangle::demangle;
 
@@ -32,6 +33,10 @@ pub struct Args {
     /// Resolve addresses to source locations
     #[clap(long)]
     pub map_source: bool,
+
+    /// Disable function name shortening
+    #[clap(long)]
+    pub long_names: bool,
 
     /// Log level
     #[clap(long, default_value="info")]
@@ -124,6 +129,11 @@ fn main() -> anyhow::Result<()> {
     let table_data: Vec<_> = (&defined[..n]).iter().map(|(addr, f)| {
         // Demangle name
         let name = format!("{:#}", demangle(f.names()[0]));
+        let name = match args.long_names {
+            true => name,
+            false => compress_name(&name),
+        };
+
         let stack = f.stack().map(|s| s.cell() ).unwrap_or( "UNKNOWN".cell() );
 
         let mut line = vec![
@@ -220,3 +230,21 @@ impl <'a>DwarfContext<'a> {
     }
 }
 
+lazy_static::lazy_static! {
+    static ref PREFIX: Regex = Regex::new(r"^([a-z0-9_:]+)(.*)").unwrap();
+    static ref NAMES: Regex = Regex::new(r"(?:[a-z0-9_]+::)+([A-Z][a-z0-9_A-Z]+)").unwrap();
+}
+
+fn compress_name(n: &str) -> String {
+    // Strip obvious prefixes
+    let mut s = PREFIX.replace_all(n, "$2").to_string();
+    if s.len() == 0 {
+        return n.to_string();
+    }
+
+    // Shorten names
+    s = NAMES.replace_all(&s, "$1").to_string();
+    
+    // Return compressed form
+    s.to_string()
+}
