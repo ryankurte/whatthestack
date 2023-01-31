@@ -1,7 +1,10 @@
 
-use addr2line::{object::{Object, SymbolMap, SymbolMapName, ObjectSection}, ObjectContext};
+use std::borrow::Cow;
+
+use addr2line::{object::{Object, SymbolMap, SymbolMapName, ObjectSection}, ObjectContext, Context, fallible_iterator::FallibleIterator};
 use clap::{Parser, ValueEnum};
-use log::{debug, info, LevelFilter};
+use gimli::{RunTimeEndian, EndianSlice, Dwarf};
+use log::{debug, info, LevelFilter, error, warn};
 use cli_table::{Cell, Table, format::{Border, Separator}};
 
 use regex::Regex;
@@ -64,7 +67,12 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // Setup logging
-    let _ = simplelog::SimpleLogger::init(args.log_level, Default::default());
+    let _ = simplelog::TermLogger::init(
+        args.log_level,
+        Default::default(),
+        simplelog::TerminalMode::Mixed,
+        simplelog::ColorChoice::Auto,
+    );
 
     debug!("args: {:?}", args);
 
@@ -178,29 +186,87 @@ fn main() -> anyhow::Result<()> {
 }
 
 struct DwarfContext<'a>{
+    endianness: gimli::RunTimeEndian,
     symbols: SymbolMap<SymbolMapName<'a>>,
-    context: ObjectContext,
+    dwarf_cow: Dwarf<Cow<'a, [u8]>>,
+    //context: Context<EndianSlice<'a, RunTimeEndian>>,
 }
 
 impl <'a>DwarfContext<'a> {
     fn load(d: &'a [u8]) -> anyhow::Result<Self> {
+        debug!("Loading DWARF information");
+
         // Parse file
-        let object = addr2line::object::File::parse(d)?;
+        let obj = object::File::parse(d)?;
 
         debug!("Sections:");
-        for s in object.sections() {
+        for s in obj.sections() {
             debug!("{}, {}, {}", s.index().0, s.address(), s.name().unwrap());
         }
+        let symbols = obj.symbol_map();
 
-        let symbols = object.symbol_map();
-    
-        // Parse dwarf
-        let context = addr2line::Context::new(&object)?;
-    
-        context.parse_lines()?;
-        context.parse_functions()?;
+        // Load a section and return as `Cow<[u8]>`.
+        let load_section = |id: gimli::SectionId| -> Result<Cow<[u8]>, gimli::Error> {
+            let name = id.name();
+            debug!("load section: {:?}", name);
 
-        Ok(Self { symbols, context })
+            let section = match obj.section_by_name(name) {
+                Some(s) => s,
+                None => {
+                    warn!("No section {} found", name);
+                    return Ok(Cow::Borrowed(&[][..]));
+                },
+            };
+
+            debug!("found section: {:?}", section);
+
+            let d = match section.uncompressed_data() {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to load data for section {}: {:?}", id.name(), e);
+                    
+                    return Err(gimli::Error::UnknownIndexSection)
+                }
+            };
+
+            debug!("Data: {}", d.len());
+
+            Ok(d)
+        };
+
+        // Load all of the sections.
+        let mut dwarf_cow = gimli::Dwarf::load(&load_section)?;
+        dwarf_cow.load_sup(&load_section)?;
+
+        let endianness = match obj.endianness() {
+            object::Endianness::Little => gimli::RunTimeEndian::Little,
+            object::Endianness::Big => gimli::RunTimeEndian::Big,
+        };
+
+        let s = Self { symbols, dwarf_cow, endianness };
+
+        // Create `EndianSlice`s for all of the sections.
+        let dwarf = s.dwarf();
+
+        let units: Vec<_> = dwarf.units().collect()?;
+        debug!("Loaded {} units: {:?}", units.len(), units);
+
+        Ok(s)
+    }
+
+    pub fn dwarf(&'a self) -> Dwarf<EndianSlice<'a, RunTimeEndian>> {
+        // Borrow a `Cow<[u8]>` to create an `EndianSlice`.
+        let borrow_section: &dyn for<'c> Fn(
+            &'c Cow<[u8]>,
+        ) -> gimli::EndianSlice<'c, gimli::RunTimeEndian> =
+            &|section| gimli::EndianSlice::new(&*section, self.endianness);
+
+        self.dwarf_cow.borrow(&borrow_section)
+    }
+
+    pub fn context(&'a self) -> anyhow::Result<Context<EndianSlice<'a, RunTimeEndian>>> {
+        let c = addr2line::Context::from_dwarf(self.dwarf())?;
+        Ok(c)
     }
 
     pub fn get_line(&self, name: &str, addr: u64) -> anyhow::Result<Option<String>> {
@@ -210,9 +276,19 @@ impl <'a>DwarfContext<'a> {
         let s = self.symbols.get(addr);
         debug!("Match symbol: {:?}", s);
 
+        let dwarf = self.dwarf();
+
+        let x = dwarf.debug_line.program(addr);
+        debug!("DWARF: {:?}", x);
+
+        Ok(None)
+    }
+
+    #[cfg(nope)]
+    fn idk {
         // Find location via dwarf
         // TODO: this, doesn't seem to work, maybe dwarf is missing line info?
-        let r = match self.context.find_location(addr)? {
+        let r = match ctx.find_location(addr)? {
             Some(r) => r,
             None => {
                 debug!("No line info for {}", name);
