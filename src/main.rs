@@ -38,6 +38,10 @@ pub struct Args {
     #[clap(long)]
     pub long_names: bool,
 
+    /// Filter results by prefix
+    #[clap(long)]
+    pub filter: Option<String>,
+
     /// Log level
     #[clap(long, default_value="info")]
     pub log_level: LevelFilter,
@@ -94,7 +98,7 @@ fn main() -> anyhow::Result<()> {
     info!("Parsed {} functions ({} undefined)", funcs.defined.len(), funcs.undefined.len());
 
     // Apply filters & sorts
-    let defined = match args.sort {
+    let mut defined = match args.sort {
         Sort::Text => {
             let mut defined: Vec<_> = funcs.defined.iter().collect();
 
@@ -122,6 +126,14 @@ fn main() -> anyhow::Result<()> {
 
     if defined.len() == 0 {
         return Err(anyhow::anyhow!("no stack length information found"));
+    }
+
+    // Apply filter if requested
+    if let Some(s) = args.filter {
+        defined = defined.drain(..).filter(|(_, f)| {
+            let name = format!("{:#}", demangle(f.names()[0]));
+            name.starts_with(&s)
+        } ).collect();
     }
 
     // Build table for display
